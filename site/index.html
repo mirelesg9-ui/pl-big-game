@@ -2,47 +2,22 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Big Game · Premier League player analytics</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Big Game</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
-<style>
-:root{--bg:#0E1116;--card:#171B22;--line:#2A303B;--chip:#1F242D;--text:#E8ECF2;--muted:#9AA3B2;--soft:#C5CBD5;--accent:#3DD9C1;--warn:#FFB870;--down:#FF9F43}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
-a{color:var(--accent)}
-.wrap{max-width:560px;margin:0 auto;padding:18px 16px 40px;display:flex;flex-direction:column;gap:16px}
-.top{display:flex;justify-content:space-between;align-items:center}
-.logo{font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:18px;letter-spacing:.02em;color:var(--text);text-decoration:none}
-.logo span{color:var(--accent)}
-.muted{color:var(--muted)}.small{font-size:12px}.soft{color:var(--soft)}
-h1{font-family:'Space Grotesk',sans-serif;font-size:32px;line-height:1.05;margin:0}
-.big{font-family:'Space Grotesk',sans-serif;font-weight:700}
-.card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:18px;display:flex;flex-direction:column;gap:12px}
-.label{font-size:12px;font-weight:600;letter-spacing:.08em;color:var(--muted);text-transform:uppercase}
-input[type=search]{width:100%;height:46px;border-radius:12px;border:1px solid var(--line);background:var(--card);color:var(--text);padding:0 14px;font-size:16px;font-family:inherit}
-.chips{display:flex;gap:8px;flex-wrap:wrap}
-.chip{min-height:40px;padding:0 14px;border-radius:999px;border:1px solid var(--line);background:transparent;color:var(--text);font-size:13px;font-family:inherit;cursor:pointer}
-.chip.on{background:var(--accent);border-color:var(--accent);color:#0E1116;font-weight:600}
-.tag{font-size:12px;padding:5px 9px;border-radius:8px;background:var(--chip);color:var(--soft)}
-.tag.warn{background:#2A2016;color:var(--warn)}
-.row{display:grid;grid-template-columns:62px minmax(0,1fr) 92px;align-items:center;gap:10px;font-size:13px}
-.bar{position:relative;height:16px;background:var(--chip);border-radius:8px}
-.bar i{position:absolute;top:0;bottom:0;left:0;border-radius:8px;background:var(--accent)}
-.bar b{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--text)}
-.grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
-.tile{background:var(--chip);border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:4px}
-.list a{display:flex;justify-content:space-between;gap:10px;padding:12px 4px;border-bottom:1px solid var(--line);color:var(--text);text-decoration:none;min-height:44px;align-items:center}
-.m{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 10px;padding:12px 2px;border-bottom:1px solid var(--line);font-size:13px}
-.pill{font-size:11px;padding:3px 7px;border-radius:6px;background:var(--chip);color:var(--soft);margin-left:6px}
-.pill.Elite{background:#173A35;color:#8AF0DF}.pill.d{background:#2A2016;color:var(--warn)}
-table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:6px 4px;text-align:right}td:first-child,th:first-child{text-align:left}th{color:var(--muted);font-weight:500}
-.scroll{overflow-x:auto}
-svg text{font-family:Inter,sans-serif}
-</style>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
-<main class="wrap" id="app"><p class="muted">Loading…</p></main>
+<main id="app" class="wrap" aria-live="polite"></main>
+<nav class="tabs" aria-label="Main">
+  <a href="#/" data-tab="home"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg><span>Home</span></a>
+  <a href="#/search" data-tab="search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg><span>Search</span></a>
+  <a href="#/method" data-tab="method"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg><span>Method</span></a>
+</nav>
 <script src="app.js"></script>
 </body>
 </html>

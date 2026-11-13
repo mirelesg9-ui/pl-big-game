@@ -28,5 +28,22 @@ def fetch(force_current=True):
     return CACHE
 
 
+def penalty_dates():
+    """Match dates per season, read from the cached FPL data."""
+    import csv
+    out = {}
+    for season in SEASONS:
+        f = CACHE / f"{season}.csv"
+        if f.exists():
+            with f.open() as fh:
+                out[season] = sorted({r["kickoff_time"][:10].replace("-", "")
+                                      for r in csv.DictReader(fh) if r.get("kickoff_time")})
+    return out
+
+
 if __name__ == "__main__":
-    fetch()
+    from sources import fetch_live_fpl, fetch_odds, fetch_penalties
+    fetch()                 # archive, every season
+    fetch_live_fpl()        # current season straight from FPL (fixes archive lag)
+    fetch_odds()            # closing odds for market strength
+    fetch_penalties(penalty_dates())  # which goals were penalties

@@ -1,14 +1,12 @@
-// Big Game: static front end. Reads JSON built by pipeline/build.py.
+// Big Game front end. Static: reads JSON built by pipeline/build.py.
 const app = document.getElementById('app');
-const cache = {};
-const get = async (p) => cache[p] ??= fetch('data/' + p).then(r => r.json());
-const esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const f2 = (x) => { if (x == null) return '–'; const t = Math.abs(x).toFixed(2); return t === '0.00' ? '0.00' : (x > 0 ? '+' : '−') + t; };
-const pct = (x) => x == null ? '–' : Math.round(x * 100) + '%';
-
-const header = (meta) => `
-  <div class="top"><a class="logo" href="#/">BIG<span>GAME</span></a>
-  <span class="small muted">Data to ${esc(meta.last_match)}</span></div>`;
+const memo = {};
+const get = (p) => memo[p] ??= fetch('data/' + p).then(r => r.json());
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const sgn = (x, d = 2) => { const t = Math.abs(x).toFixed(d); return +t === 0 ? (0).toFixed(d) : (x > 0 ? '+' : '−') + t; };
+const mood = (p) => p >= 0.7 ? 'up' : p <= 0.3 ? 'down' : 'flat';
+const fmtDate = (s) => new Date(s + 'T12:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+const BACK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>';
 
 window.addEventListener('hashchange', route);
 route();
@@ -16,141 +14,235 @@ route();
 async function route() {
   const meta = await get('meta.json');
   const [, view, slug] = location.hash.split('/');
+  document.querySelectorAll('.tabs a').forEach(a => a.classList.toggle('on',
+    a.dataset.tab === (view === 'search' || view === 'p' ? 'search' : view === 'method' ? 'method' : 'home')));
+  window.scrollTo(0, 0);
   if (view === 'p' && slug) return player(meta, slug);
+  if (view === 'search') return search(meta);
+  if (view === 'method') return method(meta);
   return home(meta);
 }
 
-// ---------------------------------------------------------------- home
+// ------------------------------------------------------------------ home
 async function home(meta) {
-  const [players, league] = await Promise.all([get('players.json'), get('league.json')]);
-  app.innerHTML = `${header(meta)}
-    <h1>Who shows up in big games?</h1>
-    <p class="soft" style="margin:0;line-height:1.5">Premier League players, judged against what they were <em>expected</em> to produce given the opponent, venue and their team. Every verdict comes with a range.</p>
-    <label class="small muted">Search a player
-      <input type="search" id="q" placeholder="e.g. Eze, Saka, Haaland" autocomplete="off"></label>
-    <div class="list" id="results"></div>
-    ${funnel(league, meta)}
-    ${reliabilityCard(meta)}
-    <p class="small muted">Built from Fantasy Premier League data (Opta), ${meta.seasons[0]} to ${meta.seasons.at(-1)}. Premier League matches only. Measures on-ball output and on-pitch team results; pressing and off-ball runs aren't in free data.</p>`;
-  const q = document.getElementById('q'), out = document.getElementById('results');
+  const league = await get('league.json');
+  const att = league.filter(p => p.group === 'attack');
+  const neutral = att.filter(p => p.text.startsWith('No clear')).length;
+  const share = Math.round(100 * neutral / att.length);
+  // attacking roles only: a holding midfielder's tiny xGI can't "step up" much
+  const pool = att.filter(p => p.elite_minutes >= 900 && p.base >= 0.25);
+  const ups = [...pool].sort((a, b) => b.p_better - a.p_better).slice(0, 5);
+  const downs = [...pool].sort((a, b) => a.p_better - b.p_better).slice(0, 5);
+  const row = (p) => `<a class="item" href="#/p/${p.slug}"><div class="who"><div class="name">${esc(p.name)}</div>
+    <div class="meta">${esc(p.team)} · ${p.pos}</div></div><div class="pill ${mood(p.p_better)}">${Math.round(p.p_better * 100)}%</div></a>`;
+  app.innerHTML = `
+    <div class="bar"><span class="mark">BIG<i>GAME</i></span><span class="tiny muted">Through ${fmtDate(meta.last_match)}</span></div>
+    <div><div class="eyebrow">Premier League · attackers</div>
+      <div class="hero" style="margin-top:10px">${share}%</div>
+      <p class="soft" style="margin-top:10px">show no clear difference against elite teams once opponent, venue and team are accounted for. Big-game reputations mostly don't survive the numbers.</p></div>
+    <a class="search" href="#/search" style="display:flex;align-items:center;color:var(--muted)">Search any player</a>
+    <section class="card"><div class="section"><h2>Leaning up vs elite</h2>
+      <p class="small muted">Chance each is genuinely better against top teams. Attacking players with 900+ elite minutes.</p></div>
+      <div class="list">${ups.map(row).join('')}</div></section>
+    <section class="card"><div class="section"><h2>Leaning down vs elite</h2>
+      <p class="small muted">Same test, other end.</p></div>
+      <div class="list">${downs.map(row).join('')}</div></section>`;
+}
+
+// ---------------------------------------------------------------- search
+async function search() {
+  const players = await get('players.json');
+  const norm = (s) => s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  app.innerHTML = `<div class="title">Search</div>
+    <input class="search" id="q" type="search" placeholder="Player name" aria-label="Search players" autocomplete="off">
+    <div class="list" id="res"></div>`;
+  const q = document.getElementById('q'), res = document.getElementById('res');
   const draw = () => {
-    const s = q.value.trim().toLowerCase();
-    const hits = (s ? players.filter(p => p.name.toLowerCase().includes(s)) : players).slice(0, 8);
-    out.innerHTML = hits.map(p => `<a href="#/p/${p.slug}"><span>${esc(p.name)}</span>
-      <span class="small muted">${esc(p.pos)} · ${esc(p.team)}</span></a>`).join('');
+    const s = norm(q.value.trim());
+    const hits = (s ? players.filter(p => norm(p.name).includes(s)) : players).slice(0, 25);
+    res.innerHTML = hits.map(p => `<a class="item" href="#/p/${p.slug}"><div class="who"><div class="name">${esc(p.name)}</div>
+      <div class="meta">${esc(p.team)} · ${p.pos}</div></div><span class="tiny muted">${p.minutes.toLocaleString()} min</span></a>`).join('')
+      || '<p class="muted">No players found.</p>';
   };
   q.addEventListener('input', draw); draw();
+  if (matchMedia('(hover: hover)').matches) q.focus();
 }
 
-function funnel(league, meta) {
-  const pts = league.filter(p => p.group === 'attack');
-  const W = 520, H = 260, pad = 36;
-  const maxX = Math.max(...pts.map(p => p.elite_minutes));
-  const ext = Math.max(0.02, ...pts.map(p => Math.abs(p.delta))) * 1.15;
-  const x = m => pad + (W - pad - 10) * m / maxX;
-  const y = v => H / 2 - (H / 2 - 20) * v / ext;
-  const dots = pts.map(p => `<a href="#/p/${p.slug}"><circle cx="${x(p.elite_minutes).toFixed(1)}" cy="${y(p.delta).toFixed(1)}" r="3.2" fill="${p.text.startsWith('No') ? '#6B7483' : p.text.startsWith('Rises') ? '#3DD9C1' : '#FF9F43'}"><title>${esc(p.name)}: ${f2(p.delta)}</title></circle></a>`).join('');
-  const v = meta.validation.attack;
-  return `<section class="card"><div class="label">Attackers: big-game effect vs minutes against elite teams</div>
-    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Funnel plot of big-game estimates">
-      <line x1="${pad}" x2="${W - 10}" y1="${y(0)}" y2="${y(0)}" stroke="#2A303B"/>
-      <text x="${pad}" y="14" fill="#9AA3B2" font-size="11">Better vs elite</text>
-      <text x="${pad}" y="${H - 22}" fill="#9AA3B2" font-size="11">Worse vs elite</text>
-      <text x="${W - 10}" y="${H - 4}" fill="#9AA3B2" font-size="11" text-anchor="end">minutes vs elite →</text>${dots}</svg>
-    <p class="small soft" style="margin:0;line-height:1.5">${v.trait_supported ? '' : `<b>Honest result:</b> a player's big-game effect in early seasons barely predicts it in later ones (r = ${v.repeatability_r}). So far, "big-game player" looks more like noise than a skill, and verdicts here are descriptions, not traits.`}</p></section>`;
+// ---------------------------------------------------------------- method
+async function method(meta) {
+  const rel = Object.entries(meta.reliability).map(([k, v]) =>
+    `<tr><td>${esc(k)}</td><td>${v.matches_to_0_7 ? v.matches_to_0_7 + ' matches' : 'Not yet'}</td></tr>`).join('');
+  const val = Object.entries(meta.validation).map(([k, v]) =>
+    `<tr><td>${{ attack: 'Attackers', defence: 'Defenders', keeper: 'Keepers' }[k]}</td><td>${v.repeatability_r == null ? 'Too little data' : 'r = ' + v.repeatability_r}</td></tr>`).join('');
+  const src = meta.sources || {};
+  const list = (a) => a && a.length ? a.join(', ') : 'not available yet';
+  app.innerHTML = `<div class="title">How it works</div>
+    <section class="card"><p class="soft">Every match, each player gets an <b>expected</b> output based on the opponent's strength, home or away, his team's strength and his own level that season. The big-game score is the chance he beats that expectation more against elite teams than against average ones. Small samples are pulled toward "no difference" until the evidence piles up.</p></section>
+    <section class="card"><div class="section"><h2>Does big-game ability repeat?</h2>
+      <p class="small muted">Early seasons vs later seasons, same players. 0.3+ would suggest a real trait.</p></div>
+      <table>${val}</table></section>
+    <section class="card"><div class="section"><h2>When does a stat mean something?</h2>
+      <p class="small muted">Matches per half before split-half r reaches 0.7, within position.</p></div>
+      <table>${rel}</table></section>
+    <section class="card"><div class="section"><h2>Data</h2></div>
+      <p class="small soft">FPL match data (Opta), ${meta.seasons[0]} to ${meta.seasons.at(-1)}. Team strength blends closing betting odds (football-data.co.uk: ${list(src.odds)}) with xG form. Penalties removed using ESPN goal data (${list(src.penalties)}). Built ${esc(meta.built)}.</p>
+      <p class="small muted">Premier League only. Measures on-ball output and on-pitch results, not pressing or off-ball runs. Defender actions are tracked from 2025/26.</p></section>`;
 }
 
-function reliabilityCard(meta) {
-  const rows = Object.entries(meta.reliability).map(([k, v]) =>
-    `<tr><td>${esc(k)}</td><td>${v.matches_to_0_7 ?? '19+'}</td></tr>`).join('');
-  return `<section class="card"><div class="label">How many matches before a stat means something</div>
-    <table><tr><th>Stat (per 90)</th><th>Matches per half to r ≥ 0.7</th></tr>${rows}</table>
-    <p class="small muted" style="margin:0">Split-half test within position, on this site's own data.</p></section>`;
-}
-
-// -------------------------------------------------------------- player
+// ---------------------------------------------------------------- player
 async function player(meta, slug) {
   const p = await get(`p/${slug}.json`);
-  const state = { team: 'all', filter: 'all' };
+  const st = { range: 'All', filter: 'All' };
+  const v = p.verdict;
+  const pb = v ? v.p_better : 0.5;
+  const m = mood(pb);
+  const word = !v ? 'Not enough data' : v.text.startsWith('No clear') ? 'Neutral'
+    : p.group === 'defence' ? (pb >= 0.5 ? 'Busier' : 'Quieter') : (pb >= 0.5 ? 'Steps up' : 'Fades');
+  const val = meta.validation[p.group];
+
   const render = () => {
-    const ms = p.matches.filter(m => state.team === 'all' || m.team === state.team);
-    app.innerHTML = `${header(meta)}
-      <div><h1>${esc(p.name)}</h1>
-      <div class="small muted" style="margin-top:6px">${esc(p.position)} · ${p.teams.map(esc).join(' → ')} · ${p.minutes.toLocaleString()} PL minutes</div></div>
-      ${verdictCard(p, meta)}
-      ${tiersCard(p)}
-      ${systemCard(p)}
-      <section class="card"><div class="label">Every match</div>
-        <div class="chips">${p.teams.length > 1 ? ['all', ...p.teams].map(t => `<button class="chip ${state.team === t ? 'on' : ''}" data-team="${esc(t)}">${t === 'all' ? 'All clubs' : esc(t)}</button>`).join('') : ''}</div>
-        <div class="chips">${[['all', 'All'], ['Elite', 'Elite opp'], ['derby', 'Derbies'], ['stakes', 'High stakes'], ['home', 'Home'], ['away', 'Away']].map(([k, l]) => `<button class="chip ${state.filter === k ? 'on' : ''}" data-f="${k}">${l}</button>`).join('')}</div>
-        ${matchLog(ms, state.filter, p)}</section>
-      <p class="small muted">Rates use appearances of 30+ minutes. FPL xG includes penalties (it isn't split), so a penalty can lift a single match.</p>`;
-    app.querySelectorAll('[data-team]').forEach(b => b.onclick = () => { state.team = b.dataset.team; render(); });
-    app.querySelectorAll('[data-f]').forEach(b => b.onclick = () => { state.filter = b.dataset.f; render(); });
+    app.innerHTML = `
+      <div class="bar"><button class="back" id="back">${BACK}Back</button></div>
+      <div><h1 class="title">${esc(p.name)}</h1><div class="sub">${p.teams.map(esc).join(' → ')} · ${p.position}</div></div>
+      ${gauge(pb, m, word)}
+      <p class="small muted" style="text-align:center;margin-top:-10px">Chance he's genuinely ${p.group === 'defence' ? 'busier' : 'better'} vs elite teams</p>
+      ${v ? `<div class="stats">
+        <div class="stat"><span class="k">Effect</span><span class="v ${m}">${sgn(v.delta)}</span><span class="tiny muted">${esc(p.short)}</span></div>
+        <div class="stat"><span class="k">Elite games</span><span class="v">${v.elite_matches}</span><span class="tiny muted">${v.elite_minutes.toLocaleString()} min</span></div>
+        <div class="stat"><span class="k">Confidence</span><span class="v">${v.confidence}</span><span class="tiny muted">±${((v.hi - v.lo) / 2).toFixed(2)}</span></div></div>` : ''}
+      ${val && !val.trait_supported ? `<p class="tiny muted">League-wide this hasn't repeated season to season yet, so it describes what happened rather than a fixed trait.</p>` : ''}
+      ${trend(p, st)}
+      ${tiers(p)}
+      ${system(p)}
+      ${matches(p, st)}`;
+    document.getElementById('back').onclick = () => history.length > 1 ? history.back() : (location.hash = '#/');
+    app.querySelectorAll('[data-range]').forEach(b => b.onclick = () => { st.range = b.dataset.range; render(); });
+    app.querySelectorAll('[data-f]').forEach(b => b.onclick = () => { st.filter = b.dataset.f; render(); });
+    scrub();
   };
   render();
-  window.scrollTo(0, 0);
 }
 
-function verdictCard(p, meta) {
-  const v = p.verdict;
-  if (!v) return `<section class="card"><div class="label">Big-game verdict</div><p class="soft">Not enough minutes yet.</p></section>`;
-  const val = meta.validation[p.group];
-  const ext = Math.max(0.1, Math.abs(v.lo), Math.abs(v.hi)) * 1.2;
-  const pos = x => 50 + 50 * x / ext;
-  const better = p.better === 'higher';
-  return `<section class="card"><div class="label">Big-game verdict</div>
-    <div class="big" style="font-size:24px;line-height:1.15">${esc(v.text)}</div>
-    <div style="display:flex;align-items:baseline;gap:8px"><span class="big" style="font-size:40px;color:var(--accent)">${f2(v.delta)}</span>
-      <span class="small muted">${esc(p.metric)} vs a top-10% opponent, compared with an average one</span></div>
-    <div style="position:relative;height:28px" aria-hidden="true">
-      <div style="position:absolute;left:0;right:0;top:13px;height:2px;background:var(--line)"></div>
-      <div style="position:absolute;left:50%;top:4px;width:2px;height:20px;background:#6B7483"></div>
-      <div style="position:absolute;left:${pos(v.lo)}%;width:${pos(v.hi) - pos(v.lo)}%;top:9px;height:10px;border-radius:6px;background:rgba(61,217,193,.35)"></div>
-      <div style="position:absolute;left:calc(${pos(v.delta)}% - 6px);top:8px;width:12px;height:12px;border-radius:50%;background:var(--accent)"></div></div>
-    <div class="small muted" style="display:flex;justify-content:space-between"><span>${better ? 'Less' : 'Less conceded'}</span><span>${better ? 'More' : 'More conceded'}</span></div>
-    <div class="soft small" style="line-height:1.5">80% range ${f2(v.lo)} to ${f2(v.hi)}. Chance he's genuinely better in big games: ${pct(v.p_better)}. Already adjusts for opponent, venue, his team's strength and his level in each season.</div>
-    <div class="chips"><span class="tag ${v.confidence === 'Low' ? 'warn' : ''}">${v.confidence} confidence</span>
-      <span class="tag">${v.elite_matches} elite matches · ${v.elite_minutes.toLocaleString()} min</span></div>
-    ${val.trait_supported ? '' : `<div class="small muted" style="line-height:1.5">League-wide, this effect hasn't repeated season to season (r = ${val.repeatability_r}), so read it as what happened, not a fixed trait.</div>`}
+function gauge(p, m, word) {
+  const R = 96, C = 2 * Math.PI * R, arc = 0.75 * C;
+  const color = { up: 'var(--up)', down: 'var(--down)', flat: 'var(--text)' }[m];
+  return `<div class="gauge" role="img" aria-label="${Math.round(p * 100)} percent, ${word}">
+    <svg viewBox="0 0 240 220" aria-hidden="true"><g transform="rotate(135 120 120)">
+      <circle cx="120" cy="120" r="${R}" fill="none" stroke="#1F1F23" stroke-width="14" stroke-linecap="round" stroke-dasharray="${arc} ${C}"/>
+      <circle cx="120" cy="120" r="${R}" fill="none" stroke="${color}" stroke-width="14" stroke-linecap="round" stroke-dasharray="${Math.max(0.001, arc * p)} ${C}"/></g></svg>
+    <div class="center"><div class="val">${Math.round(p * 100)}<small>%</small></div><div class="lab ${m}">${word}</div></div></div>`;
+}
+
+// One match's value for the player's headline metric.
+const metricOf = (p) => p.group === 'attack' ? (x => x.npxg + x.xa) : p.group === 'defence' ? (x => x.da) : (x => x.gp);
+
+function series(p, range) {
+  const f = metricOf(p);
+  const rows = p.matches.filter(x => x.minutes >= 30 && f(x) != null).slice().reverse();
+  const end = rows.length ? new Date(rows.at(-1).date) : new Date();
+  const cut = range === 'All' ? null : new Date(end - (range === '1Y' ? 365 : 730) * 864e5);
+  const pts = [];
+  for (let i = Math.min(7, Math.max(0, rows.length - 3)); i < rows.length; i++) {
+    const win = rows.slice(Math.max(0, i - 7), i + 1);
+    const mins = win.reduce((a, x) => a + x.minutes, 0);
+    const val = win.reduce((a, x) => a + f(x), 0) / mins * 90;
+    if (!cut || new Date(rows[i].date) >= cut) pts.push({ d: rows[i].date, v: val, team: rows[i].team });
+  }
+  return pts;
+}
+
+let trendState = null;
+
+function trend(p, st) {
+  const pts = series(p, st.range);
+  trendState = null;
+  if (pts.length < 3) return '';
+  const W = 440, H = 180, lo = Math.min(...pts.map(q => q.v)), hi = Math.max(...pts.map(q => q.v));
+  const pad = (hi - lo) * 0.15 || 0.1;
+  const x = i => i / (pts.length - 1) * W, y = v => H - 10 - (v - lo + pad) / (hi - lo + 2 * pad) * (H - 20);
+  const path = pts.map((q, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(q.v).toFixed(1)}`).join('');
+  const first = pts[0].v, last = pts.at(-1).v;
+  const col = last >= first ? 'var(--up)' : 'var(--down)';
+  const marks = pts.map((q, i) => i && q.team !== pts[i - 1].team
+    ? `<line x1="${x(i)}" x2="${x(i)}" y1="0" y2="${H}" stroke="#3A3A40" stroke-dasharray="3 4" vector-effect="non-scaling-stroke"/>` : '').join('');
+  const moves = pts.map((q, i) => i && q.team !== pts[i - 1].team
+    ? `<span style="position:absolute;top:0;left:calc(${100 * i / (pts.length - 1)}% + 6px)" class="tiny muted">→ ${esc(q.team)}</span>` : '').join('');
+  trendState = { pts, x };
+  return `<section class="card">
+    <div><div class="eyebrow">Form · ${esc(p.short)} · 8-game rolling</div>
+      <div style="display:flex;align-items:baseline;gap:10px;margin-top:8px"><span class="hero" id="tv" style="font-size:44px">${last.toFixed(2)}</span>
+      <span class="num ${last >= first ? 'up' : 'down'}" id="td">${sgn(last - first)}</span></div>
+      <div class="tiny muted" id="tdate">${fmtDate(pts.at(-1).d)} · ${esc(pts.at(-1).team)}</div></div>
+    <div class="chart" id="chart">${moves}<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Rolling form line chart">
+      ${marks}<path d="${path}" fill="none" stroke="${col}" stroke-width="2.5" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+      <line id="cur" x1="0" x2="0" y1="0" y2="${H}" stroke="#F2F2F4" stroke-width="1" vector-effect="non-scaling-stroke" visibility="hidden"/></svg></div>
+    <div class="seg" role="group" aria-label="Time range">${['1Y', '2Y', 'All'].map(r => `<button data-range="${r}" class="${st.range === r ? 'on' : ''}">${r}</button>`).join('')}</div>
   </section>`;
 }
 
-function tiersCard(p) {
+function scrub() {
+  const el = document.getElementById('chart');
+  if (!el || !trendState) return;
+  const { pts, x } = trendState;
+  const tv = document.getElementById('tv'), td = document.getElementById('td');
+  const tdate = document.getElementById('tdate'), cur = document.getElementById('cur');
+  const show = (i, on) => {
+    const q = pts[i];
+    tv.textContent = q.v.toFixed(2);
+    td.textContent = sgn(q.v - pts[0].v);
+    td.className = 'num ' + (q.v >= pts[0].v ? 'up' : 'down');
+    tdate.textContent = fmtDate(q.d) + ' · ' + q.team;
+    cur.setAttribute('x1', x(i)); cur.setAttribute('x2', x(i));
+    cur.setAttribute('visibility', on ? 'visible' : 'hidden');
+  };
+  const at = (e) => {
+    const r = el.getBoundingClientRect();
+    show(Math.round(Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * (pts.length - 1)), true);
+  };
+  el.addEventListener('pointermove', at);
+  el.addEventListener('pointerdown', at);
+  el.addEventListener('pointerleave', () => show(pts.length - 1, false));
+  el.addEventListener('pointerup', () => show(pts.length - 1, false));
+}
+
+function tiers(p) {
   const rows = p.tiers.filter(t => t.matches);
-  const max = Math.max(...rows.flatMap(t => [t.actual, t.expected])) * 1.1;
-  return `<section class="card"><div class="label">By opponent strength · ${esc(p.metric)}</div>
-    ${rows.map(t => `<div class="row"><span class="soft">${t.tier}</span>
-      <div class="bar"><i style="width:${100 * Math.max(0, t.actual) / max}%"></i><b style="left:${100 * t.expected / max}%"></b></div>
-      <span style="text-align:right;font-variant-numeric:tabular-nums">${t.actual.toFixed(2)} <span class="muted small">/ ${t.expected.toFixed(2)}</span></span></div>
-      <div class="small muted" style="margin:-6px 0 0 72px">${t.matches} matches</div>`).join('')}
-    <div class="small muted" style="line-height:1.5">Bar = actual. White line = expected for those exact fixtures, given opponent, venue, his team and his level that season. Tiers come from each team's xG-based strength on match day.</div></section>`;
+  if (!rows.length) return '';
+  const max = Math.max(...rows.flatMap(t => [Math.abs(t.actual), Math.abs(t.expected)])) * 1.15 || 1;
+  const higher = p.better === 'higher';
+  return `<section class="card"><div class="section"><h2>vs opponent strength</h2>
+    <p class="small muted">${esc(p.short)}, actual vs expected for those exact games.</p></div>
+    <div>${rows.map(t => {
+      const diff = t.actual - t.expected;
+      const cls = Math.abs(diff) < 0.02 ? 'flat' : (diff > 0) === higher ? 'up' : 'down';
+      return `<div class="tier"><div><div class="t">${t.tier}</div><div class="tiny muted">${t.matches} games</div>
+        <div class="track" aria-hidden="true"><i style="width:${Math.max(0, 100 * t.actual / max)}%"></i><b style="left:${Math.max(0, 100 * t.expected / max)}%"></b></div></div>
+        <div class="num" style="font-size:18px">${t.actual.toFixed(2)}</div>
+        <div class="pill ${cls}" style="min-width:64px;font-size:13px">${sgn(diff)}</div></div>`;
+    }).join('')}</div>
+    <p class="tiny muted">Bar = actual, tick = expected. Tiers come from match-day strength (betting odds + xG form).</p></section>`;
 }
 
-function systemCard(p) {
+function system(p) {
   if (!p.system.length) return '';
-  const body = p.system.map(s => `<tr><td>${s.season.slice(2)} ${esc(s.team)}</td><td>${s.xgi90.toFixed(2)}</td><td>${pct(s.team_share)}</td><td>${s.xgc90_on.toFixed(2)} / ${s.xgc90_off == null ? '–' : s.xgc90_off.toFixed(2)}</td></tr>`).join('');
-  return `<section class="card"><div class="label">Player vs system</div>
-    <div class="scroll"><table><tr><th>Season</th><th>xGI/90</th><th>Team share</th><th>xGC/90 on / off</th></tr>${body}</table></div>
-    <div class="small muted" style="line-height:1.5">Team share = his xG + xA as a share of his team's while he played. xGC on/off = chances his team conceded per 90 with him on vs. off the pitch. Rising raw numbers with a falling share usually means a better team, not a better player.</div></section>`;
+  return `<div class="section"><h2>Player vs system</h2><p class="small muted">Rising raw numbers with a falling share usually means a better team, not a better player.</p></div>
+    <div class="hscroll">${p.system.map(s => `<div class="stint"><div><div class="num">${esc(s.team)}</div><div class="tiny muted">${s.season} · ${s.minutes.toLocaleString()} min</div></div>
+      <div class="kv"><span>npxGI/90</span><span class="num">${s.xgi90.toFixed(2)}</span></div>
+      <div class="kv"><span>Team share</span><span class="num">${s.team_share == null ? '–' : Math.round(s.team_share * 100) + '%'}</span></div>
+      <div class="kv"><span>xGC on / off</span><span class="num">${s.xgc90_on.toFixed(2)} / ${s.xgc90_off == null ? '–' : s.xgc90_off.toFixed(2)}</span></div></div>`).join('')}</div>`;
 }
 
-function matchLog(ms, f, p) {
-  const keep = {
-    all: () => true, Elite: m => m.tier === 'Elite', derby: m => m.derby, stakes: m => m.stakes,
-    home: m => m.home, away: m => !m.home,
-  }[f];
-  const rows = ms.filter(keep).filter(m => m.minutes > 0);
-  const mins = rows.reduce((a, m) => a + m.minutes, 0);
-  const sum = k => rows.reduce((a, m) => a + (m[k] || 0), 0);
-  const per90 = k => mins ? (sum(k) / mins * 90).toFixed(2) : '–';
-  const att = p.group === 'attack';
-  const summary = `<div class="grid2"><div class="tile"><span class="small muted">Matches · minutes</span><span class="big" style="font-size:20px">${rows.length} · ${mins.toLocaleString()}</span></div>
-    <div class="tile"><span class="small muted">${att ? 'xG + xA per 90' : 'xGC per 90 on pitch'}</span><span class="big" style="font-size:20px">${att ? (mins ? ((sum('xg') + sum('xa')) / mins * 90).toFixed(2) : '–') : per90('xgc')}</span></div></div>`;
-  return summary + rows.slice(0, 80).map(m => `<div class="m">
-    <div>${m.home ? 'vs' : '@'} ${esc(m.opp)}<span class="pill ${m.tier}">${m.tier}</span>${m.derby ? '<span class="pill d">Derby</span>' : ''}${m.stakes ? '<span class="pill">Stakes</span>' : ''}
-      <div class="small muted">${m.date} · ${m.team} · ${m.score} · ${m.minutes}'${m.started === false ? ' (sub)' : ''}</div></div>
-    <div style="text-align:right;font-variant-numeric:tabular-nums">${att ? `${m.goals}G ${m.assists}A` : `xGC ${m.xgc.toFixed(2)}`}
-      <div class="small muted">${att ? `xG ${m.xg.toFixed(2)} · xA ${m.xa.toFixed(2)}` : (m.defcon != null ? `Def. actions ${m.defcon}` : '')}</div></div></div>`).join('')
-    + (rows.length > 80 ? `<p class="small muted">Showing the latest 80.</p>` : '');
+function matches(p, st) {
+  const keep = { All: () => true, Elite: x => x.tier === 'Elite', Derbies: x => x.derby, Stakes: x => x.stakes }[st.filter];
+  const f = metricOf(p);
+  const rows = p.matches.filter(x => x.minutes > 0 && keep(x)).slice(0, 60);
+  const right = (x) => p.group === 'attack'
+    ? `<div class="num">${x.goals}G ${x.assists}A</div><div class="tiny muted">npxG ${x.npxg.toFixed(2)} · xA ${x.xa.toFixed(2)}${x.pens ? ' · pen' : ''}</div>`
+    : `<div class="num">${f(x) == null ? '–' : (p.group === 'keeper' ? sgn(f(x)) : f(x))}</div><div class="tiny muted">${esc(p.short)}</div>`;
+  return `<div class="section"><h2>Matches</h2></div>
+    <div class="seg" role="group" aria-label="Filter matches">${['All', 'Elite', 'Derbies', 'Stakes'].map(k => `<button data-f="${k}" class="${st.filter === k ? 'on' : ''}">${k}</button>`).join('')}</div>
+    <div>${rows.map(x => `<div class="match"><div><div style="font-weight:600"><span class="dot ${x.tier}" aria-hidden="true"></span>${x.home ? 'vs' : '@'} ${esc(x.opp)}${x.derby ? '<span class="tag">Derby</span>' : ''}</div>
+      <div class="tiny muted" style="margin-top:3px">${fmtDate(x.date)} · ${x.score} · ${x.minutes}'${x.started === false ? ' sub' : ''} · ${x.tier}</div></div>
+      <div style="text-align:right">${right(x)}</div></div>`).join('') || '<p class="muted small">No matches.</p>'}</div>
+    <p class="tiny muted">Latest 60 shown. Rates use appearances of 30+ minutes.</p>`;
 }

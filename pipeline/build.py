@@ -29,6 +29,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent))
 import config as C  # noqa: E402
 from fetch import CACHE  # noqa: E402
+from sources import club, fold  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "site" / "data"
@@ -47,18 +48,26 @@ def load():
         df["season"] = season
         frames.append(df)
     df = pd.concat(frames, ignore_index=True)
-    for col in ["defensive_contribution", "starts"]:
+    for col in ["defensive_contribution", "starts", "clearances_blocks_interceptions",
+                "tackles", "goals_conceded"]:
         if col not in df:
             df[col] = np.nan
     num = ["minutes", "goals_scored", "assists", "expected_goals", "expected_assists",
            "expected_goal_involvements", "expected_goals_conceded", "team_h_score",
-           "team_a_score", "starts", "defensive_contribution", "GW", "penalties_missed"]
+           "team_a_score", "starts", "defensive_contribution", "GW", "penalties_missed",
+           "clearances_blocks_interceptions", "tackles", "goals_conceded"]
     for col in num:
         df[col] = pd.to_numeric(df[col], errors="coerce")
     df["was_home"] = df["was_home"].astype(str).str.lower().eq("true")
     df["kickoff"] = pd.to_datetime(df["kickoff_time"], utc=True)
     df["position"] = df["position"].replace({"GKP": "GK", "AM": "MID"})
-    df = df[df["position"].isin(["GK", "DEF", "MID", "FWD"])]
+    df = df[df["position"].isin(["GK", "DEF", "MID", "FWD"])].copy()
+    # Defender actions an individual owns: clearances, blocks, interceptions, tackles
+    # (FPL tracks these from 2025/26).
+    df["def_actions"] = df["clearances_blocks_interceptions"] + df["tackles"]
+    # Keeper shot-stopping proxy: chances conceded on pitch minus goals let in.
+    df["goals_prevented"] = df["expected_goals_conceded"] - df["goals_conceded"]
+    df["team"] = df["team"].map(club)
     return df
 
 
@@ -94,9 +103,102 @@ def team_strength(fx):
         for team, xgd in ((r.home_team, r.home_xg - r.away_xg), (r.away_team, r.away_xg - r.home_xg)):
             s, w = state.get(team, (C.PROMOTED_PRIOR * C.PRIOR_WEIGHT, C.PRIOR_WEIGHT))
             state[team] = (s * decay + xgd, w * decay + 1)
-    fx["home_str"], fx["away_str"] = hs, as_
+    fx["home_str_xg"], fx["away_str_xg"] = hs, as_
+    return fx
 
-    # Strength rank among the season's teams at kickoff -> tiers.
+
+def market_strength(fx):
+    """Market-implied strength from closing odds (football-data.co.uk).
+
+    Each match's 1X2 and over/under-2.5 prices become expected goals for each
+    side (Poisson). Supremacy minus home advantage splits the gap between the
+    two clubs around their running market ratings, so the number reflects
+    injuries and line-ups known on match day.
+    """
+    frames = []
+    for season in fx.season.unique():
+        f = CACHE / f"odds-{season}.csv"
+        if not f.exists():
+            continue
+        o = pd.read_csv(f, encoding="latin-1", on_bad_lines="skip")
+        o["season"] = season
+        frames.append(o)
+    fx["home_str_mkt"] = np.nan
+    fx["away_str_mkt"] = np.nan
+    if not frames:
+        return fx, []
+    o = pd.concat(frames, ignore_index=True).dropna(subset=["HomeTeam"])
+
+    def first(cols):
+        out = pd.Series(np.nan, index=o.index)
+        for c in cols:
+            if c in o:
+                out = out.fillna(pd.to_numeric(o[c], errors="coerce"))
+        return out
+    h, d, a = (first([f"PSC{x}", f"AvgC{x}", f"B365C{x}", f"PS{x}", f"Avg{x}", f"B365{x}"]) for x in "HDA")
+    ov = first(["PC>2.5", "AvgC>2.5", "P>2.5", "Avg>2.5", "B365>2.5"])
+    un = first(["PC<2.5", "AvgC<2.5", "P<2.5", "Avg<2.5", "B365<2.5"])
+    tot = 1 / h + 1 / d + 1 / a
+    ph, pa = (1 / h) / tot, (1 / a) / tot
+    pov = (1 / ov) / (1 / ov + 1 / un)
+
+    lh_flat, la_flat, T_h, T_a, T_o = poisson_table()
+    sup = np.full(len(o), np.nan)
+    ok = (ph.notna() & pa.notna() & pov.notna()).values
+    for i in np.where(ok)[0]:
+        j = np.argmin((T_h - ph.iloc[i]) ** 2 + (T_a - pa.iloc[i]) ** 2 + (T_o - pov.iloc[i]) ** 2)
+        sup[i] = lh_flat[j] - la_flat[j]
+    o["sup"] = sup
+    o["home_team"], o["away_team"] = o.HomeTeam.map(club), o.AwayTeam.map(club)
+    o = o.dropna(subset=["sup"]).drop_duplicates(["season", "home_team", "away_team"])
+    m = fx.merge(o[["season", "home_team", "away_team", "sup"]],
+                 on=["season", "home_team", "away_team"], how="left")
+    if m.sup.notna().sum() == 0:
+        return fx, []
+    home_adv = np.nanmean(m.sup)
+
+    decay = 0.5 ** (1 / 8)
+    state = {}
+    hs, as_ = [], []
+    for r in m.itertuples():
+        if np.isnan(r.sup):
+            hs.append(np.nan)
+            as_.append(np.nan)
+            continue
+        rh = state.get(r.home_team, (r.home_str_xg, 1.0))
+        ra = state.get(r.away_team, (r.away_str_xg, 1.0))
+        Rh, Ra = rh[0] / rh[1], ra[0] / ra[1]
+        gap = (r.sup - home_adv) - (Rh - Ra)
+        sh, sa = Rh + gap / 2, Ra - gap / 2
+        hs.append(sh)
+        as_.append(sa)
+        state[r.home_team] = (rh[0] * decay + sh, rh[1] * decay + 1)
+        state[r.away_team] = (ra[0] * decay + sa, ra[1] * decay + 1)
+    fx["home_str_mkt"], fx["away_str_mkt"] = hs, as_
+    return fx, sorted(m.loc[m.sup.notna(), "season"].unique().tolist())
+
+
+def poisson_table():
+    """P(home win), P(away win), P(over 2.5) on a grid of expected goals."""
+    lam = np.arange(0.15, 4.5, 0.025)
+    LH, LA = np.meshgrid(lam, lam, indexing="ij")
+    k = np.arange(11)
+    fact = np.cumprod(np.r_[1, np.arange(1, 11)]).astype(float)
+    PH = np.exp(-LH)[..., None] * LH[..., None] ** k / fact
+    PA = np.exp(-LA)[..., None] * LA[..., None] ** k / fact
+    hi, ai = np.meshgrid(k, k, indexing="ij")
+    T_h = np.einsum("xyi,xyj,ij->xy", PH, PA, (hi > ai).astype(float)).ravel()
+    T_a = np.einsum("xyi,xyj,ij->xy", PH, PA, (hi < ai).astype(float)).ravel()
+    T_o = np.einsum("xyi,xyj,ij->xy", PH, PA, (hi + ai > 2).astype(float)).ravel()
+    return LH.ravel(), LA.ravel(), T_h, T_a, T_o
+
+
+def blend_and_rank(fx):
+    """Final strength = 70% market, 30% xG (xG alone where odds are missing)."""
+    for side in ("home", "away"):
+        mk, xg = fx[f"{side}_str_mkt"], fx[f"{side}_str_xg"]
+        fx[f"{side}_str"] = np.where(mk.notna(), 0.7 * mk + 0.3 * xg, xg)
+
     # Each team starts the season at its first pre-match rating (carried over).
     long = pd.concat([
         fx[["season", "kickoff", "home_team", "home_str"]].set_axis(["season", "kickoff", "team", "str"], axis=1),
@@ -162,9 +264,40 @@ def player_matches(df, fx):
     pm["tier"] = "Weak"
     for name, lo, hi in C.TIERS:
         pm.loc[pm.opp_rank.between(lo, hi), "tier"] = name
-    pm["xgi"] = pm["expected_goals"] + pm["expected_assists"]
     pm["slug"] = pm["name"].map(slugify)
-    return pm, sides
+    pm, pen_seasons = remove_penalties(pm)
+    pm["xgi"] = pm["npxg"] + pm["expected_assists"]
+    return pm, sides, pen_seasons
+
+
+PEN_XG = 0.76  # value of a penalty in Opta-style xG models
+
+
+def remove_penalties(pm):
+    """npxG = xG - 0.76 per penalty taken. Penalty goals come from ESPN
+    (matched to the scorer by name within that match); misses from FPL."""
+    pm["pens"] = pm["penalties_missed"].fillna(0)
+    seasons = []
+    for season in pm.season.unique():
+        f = CACHE / f"pens-{season}.json"
+        if not f.exists():
+            continue
+        seasons.append(season)
+        sp = pm[(pm.season == season) & (pm.goals_scored > 0)]
+        for pen in json.loads(f.read_text())["pens"]:
+            if not pen.get("player"):
+                continue
+            rows = sp[((sp.team == pen["home"]) & (sp.opp == pen["away"]) & sp.was_home) |
+                      ((sp.team == pen["away"]) & (sp.opp == pen["home"]) & ~sp.was_home)]
+            if pen.get("team"):
+                rows = rows[rows.team == pen["team"]]
+            who = set(fold(pen["player"]).split())
+            hit = [i for i, n in zip(rows.index, rows.name) if who & set(fold(n).split())]
+            if len(hit) == 1:
+                pm.loc[hit[0], "pens"] += 1
+    pm["npxg"] = (pm["expected_goals"] - PEN_XG * pm["pens"]).clip(lower=0)
+    return pm, sorted(seasons)
+
 
 
 def slugify(name):
@@ -174,16 +307,24 @@ def slugify(name):
 # ------------------------------------------------------------- the model
 
 GROUPS = {
-    "attack": {"positions": ["MID", "FWD"], "metric": "xgi", "label": "xG + xA per 90",
-               "better": "higher"},
-    "defence": {"positions": ["DEF", "GK"], "metric": "expected_goals_conceded",
-                "label": "team xG conceded per 90 (on pitch)", "better": "lower"},
+    "attack": {"positions": ["MID", "FWD"], "metric": "xgi", "label": "npxG + xA per 90",
+               "short": "npxGI/90", "better": "higher",
+               "words": ("Steps up vs elite", "Fades vs elite")},
+    "defence": {"positions": ["DEF"], "metric": "def_actions",
+                "label": "clearances, blocks, interceptions + tackles per 90",
+                "short": "Def. actions/90", "better": "higher",
+                "words": ("Busier than expected vs elite", "Quieter than expected vs elite")},
+    "keeper": {"positions": ["GK"], "metric": "goals_prevented",
+               "label": "goals prevented per 90 (xG conceded minus goals)",
+               "short": "Goals prevented/90", "better": "higher",
+               "words": ("Steps up vs elite", "Fades vs elite")},
 }
 
 
 def fit_group(pm, group):
     g = GROUPS[group]
-    d = pm[pm.position.isin(g["positions"]) & (pm.minutes >= C.MIN_MINUTES)].copy()
+    d = pm[pm.position.isin(g["positions"]) & (pm.minutes >= C.MIN_MINUTES)
+           & pm[g["metric"]].notna()].copy()
     d["y"] = d[g["metric"]] / d["minutes"] * 90
     d["w"] = d["minutes"] / 90
     X = np.column_stack([np.ones(len(d)), d.opp_str, d.own_str, d.was_home,
@@ -226,7 +367,10 @@ def fit_group(pm, group):
     # Method-of-moments between-player slope variance (players with real samples),
     # with a small floor so intervals never collapse to a false point.
     big = est[est.minutes >= 1500]
-    tau2 = max(np.var(big.raw_slope) - np.mean(big.se2), (0.02 / span) ** 2)
+    if len(big) < 20:
+        big = est[est.minutes >= 600]
+    floor = 0.06 * np.sqrt(sigma2) / span   # never claim more certainty than this
+    tau2 = max(np.var(big.raw_slope) - np.mean(big.se2), floor ** 2)
     k = tau2 / (tau2 + est.se2)
     est["slope"] = k * est.raw_slope
     est["slope_sd"] = np.sqrt(tau2 * est.se2 / (tau2 + est.se2))
@@ -242,13 +386,12 @@ def fit_group(pm, group):
     return d, est, info
 
 
-def verdict(row, better):
+def verdict(row, better, words):
     lo = row.delta - Z80 * row.delta_sd
     hi = row.delta + Z80 * row.delta_sd
     good = lo > 0 if better == "higher" else hi < 0
     bad = hi < 0 if better == "higher" else lo > 0
-    text = ("Rises in big games" if good else "Dips in big games" if bad
-            else "No clear difference vs elite opponents")
+    text = words[0] if good else words[1] if bad else "No clear difference vs elite"
     conf = next(label for m, label in C.CONF_MINUTES if row.elite_min >= m)
     if row.delta_sd > 0:
         from math import erf, sqrt
@@ -292,14 +435,18 @@ def system_view(pm, sides, slug):
 def reliability(pm):
     """Split-half correlation by matches per half (no Spearman-Brown)."""
     d = pm[pm.minutes >= C.MIN_MINUTES].sort_values("kickoff")
-    metrics = {"xG": "expected_goals", "xA": "expected_assists", "xGI": "xgi",
-               "Defensive contributions": "defensive_contribution",
-               "xG conceded (on pitch)": "expected_goals_conceded"}
+    metrics = {"npxG": "npxg", "xA": "expected_assists", "npxG + xA": "xgi",
+               "Defender actions": "def_actions",
+               "Keeper goals prevented": "goals_prevented"}
     out = {}
     for label, col in metrics.items():
         dd = d.dropna(subset=[col])
-        if label != "xG conceded (on pitch)":
-            dd = dd[dd.position != "GK"]
+        if label == "Defender actions":
+            dd = dd[dd.position == "DEF"]
+        elif label == "Keeper goals prevented":
+            dd = dd[dd.position == "GK"]
+        else:
+            dd = dd[dd.position.isin(["MID", "FWD"])]
         curve = []
         for n in range(2, 20):
             a, b, keys = [], [], []
@@ -328,7 +475,9 @@ def reliability(pm):
 def validate(pm, group, seed=7):
     """Does a player's big-game slope repeat? Early seasons vs later ones,
     plus a permutation null for the between-player variance."""
-    seasons = sorted(pm.season.unique())
+    metric = GROUPS[group]["metric"]
+    seasons = sorted(pm.loc[pm[metric].notna() & pm.position.isin(GROUPS[group]["positions"])
+                            & (pm.minutes > 0), "season"].unique())
     half = len(seasons) // 2
     early = pm[pm.season.isin(seasons[:half])]
     late = pm[pm.season.isin(seasons[half:])]
@@ -336,7 +485,8 @@ def validate(pm, group, seed=7):
     _, e2, _ = fit_group(late, group)
     m = e1.merge(e2, on="slug", suffixes=("_a", "_b"))
     m = m[(m.minutes_a >= 900) & (m.minutes_b >= 900)]
-    rep = float(np.corrcoef(m.raw_slope_a, m.raw_slope_b)[0, 1]) if len(m) > 20 else None
+    rep = (float(np.corrcoef(m.raw_slope_a, m.raw_slope_b)[0, 1])
+           if len(m) > 20 and half > 0 else None)
 
     _, est, info = fit_group(pm, group)
     rng = np.random.default_rng(seed)
@@ -352,8 +502,10 @@ def validate(pm, group, seed=7):
 
 def main():
     df = load()
-    fx = table_stakes(team_strength(build_fixtures(df)))
-    pm, sides = player_matches(df, fx)
+    fx = team_strength(build_fixtures(df))
+    fx, odds_seasons = market_strength(fx)
+    fx = table_stakes(blend_and_rank(fx))
+    pm, sides, pen_seasons = player_matches(df, fx)
 
     models = {g: fit_group(pm, g) for g in GROUPS}
     OUT.mkdir(parents=True, exist_ok=True)
@@ -366,16 +518,18 @@ def main():
         if mins < 450:
             continue
         pos = latest.loc[slug, "position"]
-        group = "defence" if pos in ("DEF", "GK") else "attack"
+        group = {"DEF": "defence", "GK": "keeper"}.get(pos, "attack")
         g = GROUPS[group]
         d, est, info = models[group]
         e = est[est.slug == slug]
-        ver = verdict(e.iloc[0], g["better"]) if len(e) else None
+        ver = verdict(e.iloc[0], g["better"], g["words"]) if len(e) else None
         if ver:
-            ver["elite_matches"] = int(((p.tier == "Elite") & (p.minutes >= C.MIN_MINUTES)).sum())
+            ver["elite_matches"] = int((d[d.slug == slug].tier == "Elite").sum())
+            dp_ = d[d.slug == slug]
             league.append(dict(slug=slug, name=p.name.iloc[0], pos=pos, group=group,
+                               base=round(float(np.average(dp_.y, weights=dp_.w)), 3),
                                team=latest.loc[slug, "team"], **{k: ver[k] for k in
-                               ("delta", "lo", "hi", "elite_minutes", "text", "confidence")}))
+                               ("delta", "lo", "hi", "elite_minutes", "text", "confidence", "p_better")}))
 
         # Tier table: actual vs expected (pooled model + player's own level).
         dp = d[d.slug == slug]
@@ -396,13 +550,16 @@ def main():
                         started=None if pd.isna(r.starts) else bool(r.starts),
                         score=f"{int(r.gf)}-{int(r.ga)}", goals=int(r.goals_scored),
                         assists=int(r.assists), xg=round(r.expected_goals, 2),
-                        xa=round(r.expected_assists, 2),
+                        xa=round(r.expected_assists, 2), npxg=round(r.npxg, 2),
+                        pens=int(r.pens),
+                        da=None if pd.isna(r.def_actions) else int(r.def_actions),
+                        gp=None if pd.isna(r.goals_prevented) else round(r.goals_prevented, 2),
                         xgc=round(r.expected_goals_conceded, 2),
                         defcon=None if pd.isna(r.defensive_contribution) else int(r.defensive_contribution))
                    for r in log.itertuples()]
 
         doc = dict(slug=slug, name=p.name.iloc[0], position=pos, group=group,
-                   metric=g["label"], better=g["better"], minutes=mins,
+                   metric=g["label"], short=g["short"], better=g["better"], minutes=mins,
                    teams=list(dict.fromkeys(p.sort_values("kickoff").team)),
                    verdict=ver, tiers=tiers, system=system_view(pm, sides, slug),
                    matches=matches)
@@ -418,6 +575,7 @@ def main():
         built=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         last_match=pm.kickoff.max().strftime("%Y-%m-%d"),
         seasons=sorted(pm.season.unique().tolist()),
+        sources=dict(odds=odds_seasons, penalties=pen_seasons),
         models={g: m[2] for g, m in models.items()},
         reliability=reliability(pm),
         validation={g: validate(pm, g) for g in GROUPS},
