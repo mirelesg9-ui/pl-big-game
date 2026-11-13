@@ -6,7 +6,9 @@
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { margin: 0; background: var(--bg); color: var(--text); }
-body { font-family: Inter, -apple-system, system-ui, sans-serif; -webkit-font-smoothing: antialiased; font-feature-settings: "tnum" 1, "cv11" 1; }
+body { font-family: Manrope, -apple-system, system-ui, sans-serif; -webkit-font-smoothing: antialiased; font-feature-settings: "tnum" 1; }
+/* Numbers get a condensed, scoreboard-style face */
+.hero, .gauge .val, .stat .v, .num, .pill, .mark { font-family: "Barlow Condensed", Manrope, sans-serif; }
 a { color: inherit; text-decoration: none; }
 button { font: inherit; color: inherit; }
 
@@ -14,9 +16,9 @@ button { font: inherit; color: inherit; }
 
 /* type */
 .eyebrow { font-size: 12px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
-.title { font-size: 30px; font-weight: 800; letter-spacing: -.02em; line-height: 1.08; margin: 0; }
+.title { font-size: 32px; font-weight: 800; letter-spacing: -.025em; line-height: 1.08; margin: 0; }
 .sub { font-size: 14px; color: var(--muted); margin-top: 6px; }
-.hero { font-size: 56px; font-weight: 700; letter-spacing: -.03em; line-height: 1; }
+.hero { font-size: 72px; font-weight: 700; letter-spacing: -.01em; line-height: .95; }
 .num { font-weight: 700; letter-spacing: -.01em; }
 .muted { color: var(--muted); } .soft { color: var(--soft); }
 .small { font-size: 13px; } .tiny { font-size: 12px; }
@@ -25,7 +27,7 @@ p { margin: 0; line-height: 1.5; }
 
 /* chrome */
 .bar { display: flex; align-items: center; justify-content: space-between; min-height: 44px; }
-.mark { font-weight: 800; letter-spacing: .14em; font-size: 13px; }
+.mark { font-weight: 700; letter-spacing: .12em; font-size: 20px; }
 .mark i { font-style: normal; color: var(--up); }
 .back { display: inline-flex; align-items: center; gap: 4px; min-height: 44px; min-width: 44px; background: none; border: 0; padding: 0; color: var(--soft); font-size: 15px; cursor: pointer; }
 .back svg { width: 22px; height: 22px; stroke: currentColor; fill: none; stroke-width: 2; }
@@ -45,7 +47,7 @@ p { margin: 0; line-height: 1.5; }
 .item .who { min-width: 0; }
 .item .name { font-size: 16px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .item .meta { font-size: 13px; color: var(--muted); margin-top: 2px; }
-.pill { min-width: 72px; text-align: center; font-size: 14px; font-weight: 700; padding: 8px 10px; border-radius: 10px; }
+.pill { min-width: 72px; text-align: center; font-size: 18px; font-weight: 700; padding: 8px 10px; border-radius: 10px; }
 .pill.up { background: rgba(0,212,126,.14); } .pill.down { background: rgba(255,122,69,.14); } .pill.flat { background: var(--s2); color: var(--soft); }
 
 /* search */
@@ -56,14 +58,14 @@ p { margin: 0; line-height: 1.5; }
 .gauge { position: relative; width: 240px; height: 200px; margin: 4px auto 0; }
 .gauge svg { width: 100%; height: 100%; }
 .gauge .center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; padding-top: 10px; }
-.gauge .val { font-size: 64px; font-weight: 800; letter-spacing: -.04em; line-height: 1; }
-.gauge .val small { font-size: 24px; font-weight: 700; margin-left: 2px; }
+.gauge .val { font-size: 84px; font-weight: 700; letter-spacing: -.01em; line-height: 1; }
+.gauge .val small { font-size: 32px; font-weight: 600; margin-left: 2px; }
 .gauge .lab { font-size: 15px; font-weight: 700; margin-top: 6px; }
 
 .stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .stat { background: var(--s1); border-radius: 16px; padding: 14px 12px; display: flex; flex-direction: column; gap: 4px; }
 .stat .k { font-size: 12px; color: var(--muted); }
-.stat .v { font-size: 20px; font-weight: 700; letter-spacing: -.01em; }
+.stat .v { font-size: 28px; font-weight: 700; line-height: 1.05; }
 
 /* chart */
 .chart { position: relative; touch-action: pan-y; }

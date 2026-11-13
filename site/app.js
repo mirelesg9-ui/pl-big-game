@@ -170,8 +170,8 @@ function trend(p, st) {
   trendState = { pts, x };
   return `<section class="card">
     <div><div class="eyebrow">Form · ${esc(p.short)} · 8-game rolling</div>
-      <div style="display:flex;align-items:baseline;gap:10px;margin-top:8px"><span class="hero" id="tv" style="font-size:44px">${last.toFixed(2)}</span>
-      <span class="num ${last >= first ? 'up' : 'down'}" id="td">${sgn(last - first)}</span></div>
+      <div style="display:flex;align-items:baseline;gap:10px;margin-top:8px"><span class="hero" id="tv" style="font-size:60px">${last.toFixed(2)}</span>
+      <span class="num ${last >= first ? 'up' : 'down'}" id="td" style="font-size:22px">${sgn(last - first)}</span></div>
       <div class="tiny muted" id="tdate">${fmtDate(pts.at(-1).d)} · ${esc(pts.at(-1).team)}</div></div>
     <div class="chart" id="chart">${moves}<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Rolling form line chart">
       ${marks}<path d="${path}" fill="none" stroke="${col}" stroke-width="2.5" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
@@ -217,8 +217,8 @@ function tiers(p) {
       const cls = Math.abs(diff) < 0.02 ? 'flat' : (diff > 0) === higher ? 'up' : 'down';
       return `<div class="tier"><div><div class="t">${t.tier}</div><div class="tiny muted">${t.matches} games</div>
         <div class="track" aria-hidden="true"><i style="width:${Math.max(0, 100 * t.actual / max)}%"></i><b style="left:${Math.max(0, 100 * t.expected / max)}%"></b></div></div>
-        <div class="num" style="font-size:18px">${t.actual.toFixed(2)}</div>
-        <div class="pill ${cls}" style="min-width:64px;font-size:13px">${sgn(diff)}</div></div>`;
+        <div class="num" style="font-size:24px">${t.actual.toFixed(2)}</div>
+        <div class="pill ${cls}" style="min-width:64px;font-size:17px">${sgn(diff)}</div></div>`;
     }).join('')}</div>
     <p class="tiny muted">Bar = actual, tick = expected. Tiers come from match-day strength (betting odds + xG form).</p></section>`;
 }
